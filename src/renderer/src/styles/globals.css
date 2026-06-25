@@ -1,0 +1,156 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  /* Opaque dark base for Windows/Linux (no native window vibrancy). */
+  background-color: #0b0e14;
+}
+
+/* macOS 26: the window itself is transparent and provides the Liquid Glass
+   vibrancy material, so the web layers must not paint an opaque background —
+   otherwise the wallpaper can't refract through the chrome. */
+.is-mac,
+.is-mac body,
+.is-mac #root {
+  background-color: transparent;
+}
+
+/* Crisper text rendering on the dark UI, matching native desktop apps. */
+body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+@layer components {
+  /* Liquid-Glass material. Translucent fill + backdrop blur + a hairline
+     specular highlight border. `glass-chrome` floats (sidebar/toolbar),
+     `glass-panel` is for content cards, `glass-raised` for modals/popovers. */
+  .glass-chrome {
+    @apply border-glass-border bg-glass-chrome backdrop-blur-glass;
+  }
+  .glass-panel {
+    @apply border border-glass-border bg-glass-panel shadow-glass backdrop-blur-glass;
+  }
+  .glass-raised {
+    @apply border border-glass-highlight bg-glass-raised shadow-glass-lg backdrop-blur-glass-lg;
+  }
+  /* Inset field surface (inputs, code, wells) sitting on a glass panel. */
+  .glass-well {
+    @apply border border-glass-border bg-glass-well;
+  }
+}
+
+/* Native title-bar drag regions for the frameless macOS window. */
+.app-drag {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Accessibility: honor Reduce Transparency (a known Liquid Glass regression we
+   explicitly fix) — drop blur + translucency for solid, high-contrast surfaces. */
+@media (prefers-reduced-transparency: reduce) {
+  .glass-chrome,
+  .glass-panel,
+  .glass-raised,
+  .glass-well {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+  .glass-chrome {
+    background-color: #11151f;
+  }
+  .glass-panel {
+    background-color: #11151f;
+  }
+  .glass-raised {
+    background-color: #1a2030;
+  }
+  .glass-well {
+    background-color: #0b0e14;
+  }
+  /* The wallpaper can no longer show through, so re-opaque the window too. */
+  .is-mac,
+  .is-mac body,
+  .is-mac #root {
+    background-color: #0b0e14;
+  }
+}
+
+/* User-selected "Default" theme: opt out of Liquid Glass for the classic
+   opaque dark look. Mirrors the reduce-transparency fallback but is toggled by
+   the user (see app-store `theme`). Placed after `.is-mac` so the re-opaque
+   rule wins on source order. */
+.theme-default .glass-chrome,
+.theme-default .glass-panel,
+.theme-default .glass-raised,
+.theme-default .glass-well {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.theme-default .glass-chrome {
+  background-color: #11151f;
+}
+.theme-default .glass-panel {
+  background-color: #11151f;
+}
+.theme-default .glass-raised {
+  background-color: #1a2030;
+}
+.theme-default .glass-well {
+  background-color: #0b0e14;
+}
+/* No wallpaper to show through in the default theme — re-opaque the window. */
+.theme-default,
+.theme-default body,
+.theme-default #root {
+  background-color: #0b0e14;
+}
+
+/* Accessibility: respect Reduce Motion — drop the glass morph/lift transitions. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* On-brand text selection. */
+::selection {
+  background-color: rgba(91, 141, 239, 0.35); /* accent @ 35% */
+}
+
+/* Thin, theme-matched scrollbars (Datadog/TablePlus-style) instead of the
+   default chunky platform bars. WebKit only — Electron's renderer is Chromium. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #2a3142; /* between base-700 and base-600 */
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #3a4257; /* lighten on hover */
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}

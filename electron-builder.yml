@@ -1,0 +1,71 @@
+# electron-builder packaging config.
+#
+# Build flow: `npm run build` runs `tsc --noEmit && electron-vite build`, emitting
+# the main/preload/renderer bundles to out/. electron-builder then packs out/ plus
+# the production dependencies (sql.js, mysql2, mongodb, node-sql-parser, zod,
+# electron-updater) into platform installers.
+#
+# No native modules: sql.js is WebAssembly and the DB drivers are pure JS, so
+# there is nothing to node-gyp-rebuild (npmRebuild: false).
+appId: com.queryvitals.app
+productName: Query Vitals
+copyright: Copyright © 2026 Query Vitals
+
+directories:
+  output: release # gitignored; installers land here
+  buildResources: resources # icon.png lives here (build/ is gitignored, so we don't use it)
+
+# Only ship the built output + manifest. electron-builder adds production
+# node_modules automatically and prunes devDependencies.
+files:
+  - out/**
+  - package.json
+  - '!**/*.{map,md,ts}'
+
+# The sql.js wasm is loaded via require.resolve('sql.js/dist/sql-wasm.wasm') and
+# read with fs.readFileSync at runtime. Unpacking it from the asar guarantees a
+# real on-disk path regardless of how the emscripten loader reads it.
+asarUnpack:
+  - node_modules/sql.js/dist/*.wasm
+npmRebuild: false
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip # zip target is required for electron-updater on macOS
+      arch: [arm64, x64]
+  # Local/CI builds are unsigned. Set up a Developer ID certificate + notarization
+  # before distributing publicly (auto-update on macOS requires a signed app).
+  identity: null
+
+dmg:
+  title: ${productName} ${version}
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  category: Development
+  maintainer: Query Vitals <joedxb8386@gmail.com>
+  target:
+    - AppImage
+    - deb
+
+# PLACEHOLDER update feed (per "config now, wire later"). electron-builder bakes
+# this into app-update.yml, which electron-updater reads at runtime. Until this
+# points at a real server/release, update checks fail to reach a feed and the app
+# degrades gracefully (see src/main/updater.ts) — no code change needed when the
+# real target is set. Swap to provider: github (owner/repo) or a real generic URL.
+publish:
+  provider: generic
+  url: https://queryvitals.com/updates
+  channel: latest
