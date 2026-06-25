@@ -10,6 +10,24 @@ A dark-mode-first desktop app that diagnoses **MySQL 8+** and **MongoDB 5+** que
 
 It connects to a database, continuously observes the queries running against it, runs each through the engine's own execution-plan tooling, and reports a normalized diagnosis with a 0–100 performance score, copy-ready index suggestions, and workload insights. Everything is stored locally; there is no cloud dependency.
 
+## Screenshots
+
+**Dashboard** — metric cards, query volume & latency over time, and ranked top queries.
+
+![Query Vitals dashboard](pictures/demo%20dashboard.png)
+
+**Live monitoring** — captured queries scored 0–100 in real time, with full-scan and index status at a glance.
+
+![Live query monitoring](pictures/demo%20monitoring%20query.png)
+
+**Query detail** — raw query, normalized fingerprint, execution plan, performance breakdown, and a copy-ready `CREATE INDEX` recommendation.
+
+![Query detail and execution plan](pictures/demo%20execution%20query.png)
+
+**Workload insights** — deterministic N+1 / repeated-lookup detection, scored by cumulative cost with a concrete batching fix.
+
+![Workload N+1 detection](pictures/demo%20workload%20n+1%20detect.png)
+
 ## Why
 
 Slow database queries often hide behind vague symptoms: high CPU, long page loads, or a dashboard that "just feels slower today." Query Vitals turns engine-native query telemetry into a practical diagnosis: which queries are scanning too much, which indexes are missing or redundant, which query patterns are repeated too often, and what change is likely to help.
