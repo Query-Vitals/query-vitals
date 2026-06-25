@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 
 interface ModalProps {
   open: boolean;
@@ -13,6 +14,7 @@ interface ModalProps {
 
 const FOCUSABLE =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const modalStack: symbol[] = [];
 
 export function Modal({
   open,
@@ -23,11 +25,23 @@ export function Modal({
   widthClass = 'max-w-lg',
 }: ModalProps): JSX.Element | null {
   const dialogRef = useRef<HTMLDivElement>(null);
+  const stackId = useRef(Symbol('modal'));
+
+  useEffect(() => {
+    if (!open) return;
+    const id = stackId.current;
+    modalStack.push(id);
+    return () => {
+      const index = modalStack.lastIndexOf(id);
+      if (index !== -1) modalStack.splice(index, 1);
+    };
+  }, [open]);
 
   // Esc to close, and trap Tab focus within the dialog while it's open.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent): void => {
+      if (modalStack[modalStack.length - 1] !== stackId.current) return;
       if (e.key === 'Escape') {
         onClose();
         return;
@@ -62,17 +76,17 @@ export function Modal({
 
   if (!open) return null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-6 backdrop-blur-sm">
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4 backdrop-blur-sm sm:p-6">
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         tabIndex={-1}
-        className={`glass-raised relative mt-10 w-full ${widthClass} rounded-glass-lg focus:outline-none`}
+        className={`glass-raised relative flex max-h-[calc(100vh-2rem)] w-full ${widthClass} flex-col overflow-hidden rounded-glass-lg focus:outline-none sm:max-h-[calc(100vh-3rem)]`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between border-b border-glass-border px-4 py-3">
+        <div className="flex shrink-0 items-center justify-between border-b border-glass-border px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-100">{title}</h2>
           <button
             onClick={onClose}
@@ -84,12 +98,15 @@ export function Modal({
             </svg>
           </button>
         </div>
-        <div className="px-4 py-4">{children}</div>
+        <div className="min-h-0 overflow-y-auto px-4 py-4">{children}</div>
         {footer != null && (
-          <div className="flex justify-end gap-2 border-t border-glass-border px-4 py-3">{footer}</div>
+          <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-glass-border px-4 py-3">
+            {footer}
+          </div>
         )}
       </div>
       <div className="fixed inset-0 -z-10" onClick={onClose} />
-    </div>
+    </div>,
+    document.body,
   );
 }

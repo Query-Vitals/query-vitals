@@ -165,6 +165,7 @@ export function ConnectionForm({
       open={open}
       onClose={onClose}
       title={initial ? 'Edit connection' : 'New connection'}
+      widthClass="max-w-2xl"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} type="button">
