@@ -9,6 +9,7 @@ import type { AppContainer } from '@main/bootstrap/container';
 import {
   bucketMsSchema,
   dashboardLimitSchema,
+  optionalBooleanSchema,
   optionalPasswordSchema,
   parseConnectionConfig,
   parseDashboardRanking,
@@ -62,8 +63,12 @@ export function registerIpcHandlers(c: AppContainer): void {
     c.queryRepo.query(parseQueryHistoryFilter(filter)),
   );
   ipcMain.handle(C.queries.get, (_e, id: unknown) => c.queryRepo.get(parseId(id)));
-  ipcMain.handle(C.queries.explain, (_e, connectionId: unknown, rawQuery: unknown) =>
-    c.analysisService.explain(parseId(connectionId), rawQuerySchema.parse(rawQuery)),
+  ipcMain.handle(C.queries.explain, (_e, connectionId: unknown, rawQuery: unknown, analyze?: unknown) =>
+    c.analysisService.explain(
+      parseId(connectionId),
+      rawQuerySchema.parse(rawQuery),
+      optionalBooleanSchema.parse(analyze) ?? false,
+    ),
   );
 
   // --- dashboard ---

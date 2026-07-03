@@ -10,6 +10,13 @@
  * filter and sort, plus unused-index detection — indexes that $indexStats
  * reports zero accesses for over the observation window (Phase 4).
  *
+ * Postgres rules (Phase 7): the shared missing/composite rules via the
+ * PostgresQL parser dialect, redundant-index detection (same-method prefix or
+ * duplicate), unused-index detection from `pg_stat_user_indexes.idx_scan`,
+ * expression-index suggestions when a function or cast wrapped around a column
+ * defeats a plain index (e.g. `LOWER(email) = ?`), and GIN suggestions for
+ * JSONB/array containment predicates (`@>`, `&&`).
+ *
  * The engine is pure: same inputs → same suggestions, so the field-ordering,
  * prefix, and redundancy logic is directly unit-testable without a database.
  */
@@ -31,6 +38,7 @@ import type {
 } from '@shared/types/recommendation';
 import type { QueryRecord } from '@shared/types/query';
 import type { DatabaseEngine } from '@shared/types/database';
+import { parseableSql, sqlDialectOf } from '@main/application/analysis/sql-dialect';
 
 interface Candidate {
   engine: DatabaseEngine;
@@ -61,33 +69,33 @@ export class RecommendationEngine implements IRecommendationEngine {
   }
 
   detectRedundantIndexes(input: RecommendationInput): Recommendation[] {
-    // Prefix/duplicate detection is a MySQL rule; Mongo unused-index detection
-    // is handled separately by detectUnusedIndexes.
-    if (engineOf(input) === 'mongodb') return [];
+    // Prefix/duplicate detection is a SQL-engine rule; Mongo unused-index
+    // detection is handled separately by detectUnusedIndexes.
+    if (input.engine === 'mongodb') return [];
     const recs: Recommendation[] = [];
     const byTarget = groupBy(input.existingIndexes, (i) => `${i.databaseName}.${i.targetName}`);
     for (const indexes of byTarget.values()) {
       for (const a of indexes) {
-        if (a.name === 'PRIMARY') continue;
+        if (a.primary || a.name === 'PRIMARY') continue;
         // A unique index enforces a constraint, so it is never "redundant"
         // even if its columns are covered by another index.
         if (a.unique) continue;
         // Find the index that makes `a` redundant — a longer index `a` is a
         // left-prefix of, or an exact duplicate we deterministically drop `a`
         // in favor of. The predicate fires for exactly one side of a pair.
-        const covering = indexes.find((b) => b !== a && b.name !== 'PRIMARY' && makesRedundant(a, b));
+        const covering = indexes.find((b) => b !== a && !b.primary && makesRedundant(a, b));
         if (!covering) continue;
         const duplicate = sameFields(a, covering);
         recs.push({
           id: randomUUID(),
           connectionId: input.connectionId,
-          engine: 'mysql',
+          engine: input.engine,
           kind: 'redundant-index',
           severity: 'low',
           databaseName: a.databaseName,
           targetName: a.targetName,
           fields: a.fields,
-          ddl: `DROP INDEX \`${a.name}\` ON \`${a.targetName}\`;`,
+          ddl: sqlDropIndex(input.engine, a),
           rationale: duplicate
             ? `Index \`${a.name}\` (${fieldNames(a.fields).join(', ')}) is an exact duplicate of \`${covering.name}\`. Two identical indexes cost double the write and storage overhead for no added read benefit.`
             : `Index \`${a.name}\` (${fieldNames(a.fields).join(', ')}) is a left-prefix of \`${covering.name}\` (${fieldNames(covering.fields).join(', ')}), which already serves any query \`${a.name}\` would. It is therefore redundant.`,
@@ -102,36 +110,45 @@ export class RecommendationEngine implements IRecommendationEngine {
   }
 
   detectUnusedIndexes(input: RecommendationInput): Recommendation[] {
-    // Unused-index detection is a MongoDB rule, driven by $indexStats access
-    // counts that the Mongo connector attaches to each ExistingIndex.
-    if (engineOf(input) !== 'mongodb') return [];
-    // Only conclude "unused" for collections that actually saw query activity
+    // Unused-index detection needs a per-index usage counter: MongoDB
+    // $indexStats accesses, or Postgres pg_stat_user_indexes.idx_scan. MySQL
+    // has no equivalent the connector collects, so the rule stays silent there.
+    if (input.engine === 'mysql') return [];
+    const engine = input.engine;
+    // Only conclude "unused" for targets that actually saw query activity
     // in the observation window — otherwise a zero count just means nothing ran.
     const activeTargets = new Set(
-      input.queries.filter((q) => q.engine === 'mongodb').map((q) => q.targetName),
+      input.queries.filter((q) => q.engine === engine).map((q) => q.targetName),
     );
     const recs: Recommendation[] = [];
     for (const idx of input.existingIndexes) {
-      // No $indexStats data → cannot conclude anything (needs server privileges).
+      // No usage data → cannot conclude anything (needs server privileges).
       if (idx.accessCount == null) continue;
-      // The default _id_ index is mandatory and cannot be dropped.
-      if (idx.name === '_id_') continue;
+      // Mandatory indexes: Mongo's _id_, and anything backing a primary key.
+      if (idx.name === '_id_' || idx.primary) continue;
       if (idx.accessCount > 0) continue;
       if (!activeTargets.has(idx.targetName)) continue;
       const fieldList = fieldNames(idx.fields).join(', ');
+      const windowNoun =
+        engine === 'postgres'
+          ? 'since PostgreSQL statistics were last reset'
+          : 'over the observation window';
       recs.push({
         id: randomUUID(),
         connectionId: input.connectionId,
-        engine: 'mongodb',
+        engine,
         kind: 'unused-index',
         severity: 'low',
         databaseName: idx.databaseName,
         targetName: idx.targetName,
         fields: idx.fields,
-        ddl: `db.${idx.targetName}.dropIndex("${idx.name}");`,
+        ddl:
+          engine === 'postgres'
+            ? `DROP INDEX "${idx.name}";`
+            : `db.${idx.targetName}.dropIndex("${idx.name}");`,
         rationale: idx.unique
-          ? `Index \`${idx.name}\` (${fieldList}) on \`${idx.targetName}\` recorded 0 accesses over the observation window. It appears unused, but it is a unique index — confirm the uniqueness constraint is no longer needed before dropping it.`
-          : `Index \`${idx.name}\` (${fieldList}) on \`${idx.targetName}\` recorded 0 accesses over the observation window despite query activity on the collection. It appears unused.`,
+          ? `Index \`${idx.name}\` (${fieldList}) on \`${idx.targetName}\` recorded 0 accesses ${windowNoun}. It appears unused, but it is a unique index — confirm the uniqueness constraint is no longer needed before dropping it.`
+          : `Index \`${idx.name}\` (${fieldList}) on \`${idx.targetName}\` recorded 0 accesses ${windowNoun} despite query activity on \`${idx.targetName}\`. It appears unused.`,
         estimatedImpact: `Dropping it removes the write and storage overhead of maintaining \`${idx.name}\` on every insert and update, with no observed read benefit.`,
         sourceFingerprints: [],
         createdAt: new Date().toISOString(),
@@ -147,6 +164,8 @@ export class RecommendationEngine implements IRecommendationEngine {
       ...this.suggestCompositeIndexes(input),
       ...this.detectRedundantIndexes(input),
       ...this.detectUnusedIndexes(input),
+      ...this.suggestExpressionIndexes(input),
+      ...this.suggestGinIndexes(input),
     ];
     // De-duplicate by DDL, keep the highest severity, then sort.
     const byDdl = new Map<string, Recommendation>();
@@ -159,6 +178,96 @@ export class RecommendationEngine implements IRecommendationEngine {
     return [...byDdl.values()].sort(
       (a, b) => severityWeight(b.severity) - severityWeight(a.severity),
     );
+  }
+
+  /**
+   * Postgres: a predicate like `LOWER(email) = ?` or `email::text = ?` cannot
+   * use a plain b-tree index on the bare column — the exact expression must be
+   * indexed. Suggest that expression index for offending queries, which both
+   * fixes the query and explains *why* the existing index was not used.
+   */
+  private suggestExpressionIndexes(input: RecommendationInput): Recommendation[] {
+    if (input.engine !== 'postgres') return [];
+    const recs: Recommendation[] = [];
+    for (const q of input.queries) {
+      if (!isOffending(q)) continue;
+      const expressions = this.extractWrappedPredicates(q);
+      for (const expr of expressions) {
+        if (expressionIndexExists(q.targetName, expr, input.existingIndexes)) continue;
+        const idxName = `idx_${q.targetName}_${expr.column}_expr`.slice(0, 63);
+        recs.push({
+          id: randomUUID(),
+          connectionId: input.connectionId,
+          engine: 'postgres',
+          kind: 'expression-index',
+          severity: severityFor(candidateStats(q)),
+          databaseName: q.databaseName,
+          targetName: q.targetName,
+          fields: [{ name: expr.text, direction: 1 }],
+          ddl: `CREATE INDEX ${idxName} ON ${q.targetName} (${expr.text});`,
+          rationale: `This query filters on \`${expr.text}\`, not on \`${expr.column}\` directly. Wrapping the column in a ${expr.kind} prevents PostgreSQL from using a plain index on \`${expr.column}\` — an expression index on \`${expr.text}\` matches the predicate exactly.`,
+          estimatedImpact: `Turns the ${ENGINE_NOUNS.postgres.scan} on \`${q.targetName}\` into an index lookup for this predicate.`,
+          sourceFingerprints: [q.fingerprint],
+          createdAt: new Date().toISOString(),
+          dismissed: false,
+        });
+      }
+    }
+    return recs;
+  }
+
+  /**
+   * Postgres: JSONB / array containment (`@>`, `&&`) is not served by b-tree
+   * at all; a GIN index is the engine's answer. Detected textually on the
+   * normalized statement because these operators sit outside what the SQL
+   * parser handles reliably.
+   */
+  private suggestGinIndexes(input: RecommendationInput): Recommendation[] {
+    if (input.engine !== 'postgres') return [];
+    const recs: Recommendation[] = [];
+    for (const q of input.queries) {
+      if (!isOffending(q)) continue;
+      for (const column of extractContainmentColumns(q.normalizedQuery)) {
+        if (ginIndexExists(q.targetName, column, input.existingIndexes)) continue;
+        const idxName = `idx_${q.targetName}_${column}_gin`.slice(0, 63);
+        recs.push({
+          id: randomUUID(),
+          connectionId: input.connectionId,
+          engine: 'postgres',
+          kind: 'gin-index',
+          severity: severityFor(candidateStats(q)),
+          databaseName: q.databaseName,
+          targetName: q.targetName,
+          fields: [{ name: column, direction: 1 }],
+          ddl: `CREATE INDEX ${idxName} ON ${q.targetName} USING GIN (${column});`,
+          rationale: `This query uses a containment operator on \`${column}\`, which a b-tree index cannot serve. A GIN index supports JSONB and array containment directly. For JSONB filtered only with \`@>\`, the \`jsonb_path_ops\` operator class gives a smaller, faster index.`,
+          estimatedImpact: `Turns the ${ENGINE_NOUNS.postgres.scan} on \`${q.targetName}\` into a GIN index lookup for this predicate.`,
+          sourceFingerprints: [q.fingerprint],
+          createdAt: new Date().toISOString(),
+          dismissed: false,
+        });
+      }
+    }
+    return recs;
+  }
+
+  /** Function- or cast-wrapped columns compared to a value in the WHERE clause. */
+  private extractWrappedPredicates(q: QueryRecord): WrappedPredicate[] {
+    let ast: unknown;
+    try {
+      ast = this.parser.astify(parseableSql(q.normalizedQuery, q.engine), {
+        database: sqlDialectOf(q.engine),
+      });
+    } catch {
+      return [];
+    }
+    const node = Array.isArray(ast) ? ast[0] : ast;
+    if (!node || typeof node !== 'object') return [];
+    const out: WrappedPredicate[] = [];
+    walkWhereForWrapped((node as Record<string, unknown>)['where'], out);
+    // De-duplicate by rendered expression.
+    const seen = new Set<string>();
+    return out.filter((e) => (seen.has(e.text) ? false : (seen.add(e.text), true)));
   }
 
   /** Extract one index candidate per offending query (either engine). */
@@ -191,7 +300,9 @@ export class RecommendationEngine implements IRecommendationEngine {
   private extractIndexFields(q: QueryRecord): IndexField[] {
     let ast: unknown;
     try {
-      ast = this.parser.astify(q.normalizedQuery, { database: 'MySQL' });
+      ast = this.parser.astify(parseableSql(q.normalizedQuery, q.engine), {
+        database: sqlDialectOf(q.engine),
+      });
     } catch {
       return [];
     }
@@ -233,9 +344,14 @@ export class RecommendationEngine implements IRecommendationEngine {
           ? 'compound-index'
           : 'composite-index';
     const fieldList = fieldNames(c.fields).join(', ');
-    const ddl = c.engine === 'mongodb' ? mongoCreateIndex(c) : mysqlCreateIndex(c);
-    const engineNoun = c.engine === 'mongodb' ? 'MongoDB' : 'MySQL';
-    const scanNoun = c.engine === 'mongodb' ? 'collection scan' : 'full table scan';
+    const ddl =
+      c.engine === 'mongodb'
+        ? mongoCreateIndex(c)
+        : c.engine === 'postgres'
+          ? pgCreateIndex(c)
+          : mysqlCreateIndex(c);
+    const engineNoun = ENGINE_NOUNS[c.engine].name;
+    const scanNoun = ENGINE_NOUNS[c.engine].scan;
     const examinedNoun = c.engine === 'mongodb' ? 'documents' : 'rows';
 
     return {
@@ -260,6 +376,12 @@ export class RecommendationEngine implements IRecommendationEngine {
 }
 
 /* ---------- helpers ---------- */
+
+const ENGINE_NOUNS: Record<DatabaseEngine, { name: string; scan: string }> = {
+  mysql: { name: 'MySQL', scan: 'full table scan' },
+  postgres: { name: 'PostgreSQL', scan: 'sequential scan' },
+  mongodb: { name: 'MongoDB', scan: 'collection scan' },
+};
 
 const EQUALITY_OPS = new Set(['=', 'IN']);
 const RANGE_OPS = new Set(['>', '<', '>=', '<=', 'BETWEEN', '<>', '!=']);
@@ -289,10 +411,144 @@ function columnOf(node: unknown): string | null {
   return null;
 }
 
+/* ---------- Postgres expression / containment detection ---------- */
+
+interface WrappedPredicate {
+  /** Bare column inside the wrapper, e.g. "email". */
+  column: string;
+  /** Renderable index expression, e.g. "lower(email)" or "(email::text)". */
+  text: string;
+  kind: 'function' | 'cast';
+}
+
+/** Functions safe to index (immutable, single-column). */
+const INDEXABLE_FUNCTIONS = new Set(['lower', 'upper']);
+
+function walkWhereForWrapped(node: unknown, out: WrappedPredicate[]): void {
+  if (!node || typeof node !== 'object') return;
+  const n = node as Record<string, unknown>;
+  if (n['type'] !== 'binary_expr') return;
+  const op = String(n['operator']);
+  if (op === 'AND' || op === 'OR') {
+    walkWhereForWrapped(n['left'], out);
+    walkWhereForWrapped(n['right'], out);
+    return;
+  }
+  if (!EQUALITY_OPS.has(op) && !RANGE_OPS.has(op)) return;
+  const wrapped = wrappedPredicateOf(n['left']);
+  if (wrapped) out.push(wrapped);
+}
+
+/** A function/cast around a single column, on the comparison's left side. */
+function wrappedPredicateOf(node: unknown): WrappedPredicate | null {
+  if (!node || typeof node !== 'object') return null;
+  const n = node as Record<string, unknown>;
+  if (n['type'] === 'function') {
+    const fn = functionNameOf(n['name']);
+    if (!fn || !INDEXABLE_FUNCTIONS.has(fn)) return null;
+    const args = (n['args'] as { value?: unknown[] } | undefined)?.value;
+    if (!Array.isArray(args) || args.length !== 1) return null;
+    const column = columnOf(args[0]);
+    if (!column) return null;
+    return { column, text: `${fn}(${column})`, kind: 'function' };
+  }
+  if (n['type'] === 'cast') {
+    const column = columnOf(n['expr']);
+    const dataType = (n['target'] as { dataType?: string } | undefined)?.dataType;
+    if (!column || !dataType) return null;
+    return { column, text: `(${column}::${dataType.toLowerCase()})`, kind: 'cast' };
+  }
+  return null;
+}
+
+/** node-sql-parser renders function names as a string or a nested name list. */
+function functionNameOf(name: unknown): string | null {
+  if (typeof name === 'string') return name.toLowerCase();
+  if (name && typeof name === 'object') {
+    const parts = (name as { name?: Array<{ value?: string }> }).name;
+    const value = Array.isArray(parts) ? parts[parts.length - 1]?.value : undefined;
+    if (typeof value === 'string') return value.toLowerCase();
+  }
+  return null;
+}
+
+/**
+ * Columns compared with a containment operator (`col @> ?`, `col && ?`) in the
+ * normalized statement. `<@` is excluded: GIN serves it for arrays but not for
+ * JSONB, and the column type is unknown here.
+ */
+function extractContainmentColumns(normalizedQuery: string): string[] {
+  const out = new Set<string>();
+  const re = /("?[A-Za-z_][\w$]*"?(?:\."?[A-Za-z_][\w$]*"?)?)\s*(?:@>|&&)\s*\?/g;
+  for (const match of normalizedQuery.matchAll(re)) {
+    const qualified = match[1] ?? '';
+    // Drop any table/alias qualifier and identifier quotes.
+    const column = qualified.split('.').pop()?.replace(/"/g, '') ?? '';
+    // `&&` is also the (non-standard) boolean AND in some SQL text; requiring a
+    // word-like left side keeps false positives out.
+    if (column) out.add(column);
+  }
+  return [...out];
+}
+
+function expressionIndexExists(
+  targetName: string,
+  expr: WrappedPredicate,
+  existing: ExistingIndex[],
+): boolean {
+  // Expression columns come back from the catalog as rendered text like
+  // "lower(email)" or "lower((email)::text)" — match on function + column
+  // rather than exact text.
+  const needle = expr.kind === 'function' ? expr.text.slice(0, expr.text.indexOf('(') + 1) : '::';
+  return existing.some((idx) => {
+    if (idx.targetName !== targetName) return false;
+    const first = idx.fields[0]?.name.toLowerCase().replace(/\s+/g, '') ?? '';
+    return first.includes(needle) && first.includes(expr.column.toLowerCase());
+  });
+}
+
+function ginIndexExists(targetName: string, column: string, existing: ExistingIndex[]): boolean {
+  return existing.some(
+    (idx) =>
+      idx.targetName === targetName &&
+      idx.method === 'gin' &&
+      idx.fields[0]?.name === column,
+  );
+}
+
+/** Offending = the analysis says this query scans or reads far too much. */
+function isOffending(q: QueryRecord): boolean {
+  if (!q.analysis) return false;
+  const a = q.analysis;
+  return a.fullTableScan || a.collectionScan || a.selectivity < 0.1;
+}
+
+/** Candidate-shaped stats for severity scoring of the special-index rules. */
+function candidateStats(q: QueryRecord): Pick<Candidate, 'fullScan' | 'rowsExamined'> {
+  const a = q.analysis;
+  return {
+    fullScan: a ? a.fullTableScan || a.collectionScan : false,
+    rowsExamined: a?.rowsExamined ?? 0,
+  };
+}
+
 function mysqlCreateIndex(c: Candidate): string {
   const cols = c.fields.map((f) => (f.direction === -1 ? `${f.name} DESC` : f.name));
   const idxName = `idx_${c.targetName}_${c.fields.map((f) => f.name).join('_')}`.slice(0, 64);
   return `CREATE INDEX \`${idxName}\` ON \`${c.targetName}\` (${cols.join(', ')});`;
+}
+
+function pgCreateIndex(c: Candidate): string {
+  const cols = c.fields.map((f) => (f.direction === -1 ? `${f.name} DESC` : f.name));
+  // Postgres identifiers max out at 63 bytes.
+  const idxName = `idx_${c.targetName}_${c.fields.map((f) => f.name).join('_')}`.slice(0, 63);
+  return `CREATE INDEX ${idxName} ON ${c.targetName} (${cols.join(', ')});`;
+}
+
+function sqlDropIndex(engine: DatabaseEngine, idx: ExistingIndex): string {
+  return engine === 'postgres'
+    ? `DROP INDEX "${idx.name}";`
+    : `DROP INDEX \`${idx.name}\` ON \`${idx.targetName}\`;`;
 }
 
 /* ---------- MongoDB index extraction ---------- */
@@ -414,17 +670,21 @@ function classifyMongoField(
   equality.push(field);
 }
 
-function engineOf(input: { queries: QueryRecord[] }): DatabaseEngine {
-  return input.queries[0]?.engine ?? 'mysql';
-}
-
 function indexExists(c: Candidate, existing: ExistingIndex[]): boolean {
   const want = c.fields.map((f) => f.name);
   return existing.some(
     (idx) =>
       idx.targetName === c.targetName &&
+      // Only b-tree-like indexes serve equality/range/sort candidates — a GIN
+      // index on the same column must not suppress a b-tree suggestion.
+      isBtreeLike(idx) &&
       want.every((name, i) => idx.fields[i]?.name === name),
   );
+}
+
+/** Engines without a method report undefined, which means b-tree. */
+function isBtreeLike(idx: ExistingIndex): boolean {
+  return idx.method == null || idx.method === 'btree';
 }
 
 function isLeftPrefixOf(a: ExistingIndex, b: ExistingIndex): boolean {
@@ -439,12 +699,15 @@ function sameFields(a: ExistingIndex, b: ExistingIndex): boolean {
 
 /**
  * True when `b` makes `a` redundant and `a` is the one that should be dropped.
- * `a` is assumed non-unique (a unique index is never redundant). Two cases:
+ * `a` is assumed non-unique (a unique index is never redundant). Only indexes
+ * of the same access method are comparable — a GIN index on a column does not
+ * make a b-tree on the same column redundant. Two cases:
  *  - `a` is a strict left-prefix of `b` — any lookup `a` serves, `b` serves too.
  *  - `a` and `b` are exact duplicates — keep the unique one, else keep the
  *    lexicographically-smaller name, so exactly one side of the pair fires.
  */
 function makesRedundant(a: ExistingIndex, b: ExistingIndex): boolean {
+  if ((a.method ?? 'btree') !== (b.method ?? 'btree')) return false;
   if (isLeftPrefixOf(a, b)) return true;
   if (sameFields(a, b)) return b.unique || a.name > b.name;
   return false;
@@ -466,7 +729,7 @@ function reductionImpact(c: Candidate, examinedNoun: string): string {
   return `Examines ~${examined.toLocaleString('en-US')} ${examinedNoun} → returns ~${returned.toLocaleString('en-US')}`;
 }
 
-function severityFor(c: Candidate): RecommendationSeverity {
+function severityFor(c: Pick<Candidate, 'fullScan' | 'rowsExamined'>): RecommendationSeverity {
   if (c.fullScan && c.rowsExamined > 10000) return 'critical';
   if (c.fullScan) return 'high';
   if (c.rowsExamined > 1000) return 'medium';

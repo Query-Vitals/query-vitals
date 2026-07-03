@@ -1,8 +1,9 @@
 /**
  * Default IQueryAnalyzer implementation.
  * - Normalization:
- *     MySQL — light literal-stripping (digest text is already normalized) +
- *       table/type extraction via node-sql-parser with a regex fallback.
+ *     MySQL / Postgres — light literal-stripping (digest text is already
+ *       normalized; Postgres $n placeholders become "?") + table/type
+ *       extraction via node-sql-parser with a regex fallback.
  *     MongoDB — the command document is canonicalized: field names and
  *       operators are kept, literal values become "?", scalar arrays collapse
  *       to one placeholder, so a thousand runs share one fingerprint.
@@ -28,18 +29,28 @@ import { computeScore, computeScoreBreakdown } from '@main/domain/value-objects/
 
 const DEFAULT_SLOW_MS = 100;
 
+/** Per-engine stage labels + source names surfaced on the metrics-only path. */
+const ENGINE_VOCABULARY: Record<
+  DatabaseEngine,
+  { source: string; scanStage: string; indexStage: string }
+> = {
+  mysql: { source: 'performance_schema', scanStage: 'ALL', indexStage: 'index' },
+  postgres: { source: 'pg_stat_statements', scanStage: 'Seq Scan', indexStage: 'Index Scan' },
+  mongodb: { source: 'profiler', scanStage: 'COLLSCAN', indexStage: 'IXSCAN' },
+};
+
 export class QueryAnalyzer implements IQueryAnalyzer {
   private readonly parser = new Parser();
 
   normalize(raw: RawObservedQuery, engine: DatabaseEngine): NormalizedStatement {
-    return engine === 'mongodb' ? this.normalizeMongo(raw) : this.normalizeSqlStatement(raw);
+    return engine === 'mongodb' ? this.normalizeMongo(raw) : this.normalizeSqlStatement(raw, engine);
   }
 
-  private normalizeSqlStatement(raw: RawObservedQuery): NormalizedStatement {
+  private normalizeSqlStatement(raw: RawObservedQuery, engine: DatabaseEngine): NormalizedStatement {
     const text = raw.rawQuery.trim();
-    const normalizedQuery = normalizeSql(text);
+    const normalizedQuery = normalizeSql(text, engine);
     const queryType = detectType(text);
-    const { target, related } = extractTables(text, this.parser);
+    const { target, related } = extractTables(text, this.parser, engine);
     return {
       normalizedQuery,
       fingerprint: fingerprintOf(raw.databaseName, normalizedQuery),
@@ -95,11 +106,13 @@ export class QueryAnalyzer implements IQueryAnalyzer {
   ): Promise<IndexAnalysis> {
     const slowThresholdMs = opts?.slowThresholdMs ?? DEFAULT_SLOW_MS;
 
-    if (raw.metrics) {
+    if (raw.metrics && !opts?.analyze) {
       return this.analyzeFromMetrics(raw, slowThresholdMs, connector.config.engine);
     }
 
-    const { analysis } = await connector.explain(raw.rawQuery, raw.databaseName);
+    const { analysis } = await connector.explain(raw.rawQuery, raw.databaseName, {
+      ...(opts?.analyze != null ? { analyze: opts.analyze } : {}),
+    });
     // Re-score with the caller's threshold and the observed execution time.
     const scoreInput = {
       usesIndex: analysis.usesIndex,
@@ -171,8 +184,8 @@ export class QueryAnalyzer implements IQueryAnalyzer {
       slowThresholdMs,
     };
 
-    const source = isMongo ? 'profiler' : 'performance_schema';
-    const stage = isMongo ? (scanned ? 'COLLSCAN' : 'IXSCAN') : scanned ? 'ALL' : 'index';
+    const { source, scanStage, indexStage } = ENGINE_VOCABULARY[engine];
+    const stage = scanned ? scanStage : indexStage;
     const detail = scanned
       ? `No index used (${source}). Run explain for the full plan.`
       : `Index used (${source}). Run explain for the full plan.`;
@@ -199,10 +212,16 @@ export class QueryAnalyzer implements IQueryAnalyzer {
   }
 }
 
-function normalizeSql(sql: string): string {
-  return sql
-    .replace(/'(?:[^'\\]|\\.)*'/g, '?') // single-quoted strings
-    .replace(/"(?:[^"\\]|\\.)*"/g, '?') // double-quoted strings
+function normalizeSql(sql: string, engine: DatabaseEngine): string {
+  let out = sql.replace(/'(?:[^'\\]|\\.)*'/g, '?'); // single-quoted strings
+  // In Postgres, double quotes delimit identifiers ("users"."id"), never
+  // strings — stripping them would mangle the statement. MySQL digest text
+  // may contain double-quoted string literals, so they collapse there.
+  if (engine !== 'postgres') {
+    out = out.replace(/"(?:[^"\\]|\\.)*"/g, '?');
+  }
+  return out
+    .replace(/\$\d+\b/g, '?') // Postgres $n bind parameters (pg_stat_statements)
     .replace(/\b\d+(?:\.\d+)?\b/g, '?') // numbers
     .replace(/\s+/g, ' ')
     .trim();
@@ -212,6 +231,7 @@ function detectType(sql: string): QueryType {
   const w = sql.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
   switch (w) {
     case 'select':
+    case 'with': // CTEs are select-shaped for classification purposes
       return 'select';
     case 'insert':
       return 'insert';
@@ -224,16 +244,22 @@ function detectType(sql: string): QueryType {
   }
 }
 
-function extractTables(sql: string, parser: Parser): { target: string; related: string[] } {
+function extractTables(
+  sql: string,
+  parser: Parser,
+  engine: DatabaseEngine,
+): { target: string; related: string[] } {
   try {
-    const result = parser.tableList(sql, { database: 'MySQL' });
+    const result = parser.tableList(sql, {
+      database: engine === 'postgres' ? 'PostgresQL' : 'MySQL',
+    });
     // tableList returns entries like "select::db::table".
     const names = result.map((t) => t.split('::').pop() ?? '').filter(Boolean);
     if (names.length) return { target: names[0] ?? 'unknown', related: names.slice(1) };
   } catch {
     /* fall through to regex */
   }
-  const m = sql.match(/\b(?:from|into|update|join)\s+`?([a-zA-Z0-9_]+)`?/i);
+  const m = sql.match(/\b(?:from|into|update|join)\s+[`"]?([a-zA-Z0-9_]+)[`"]?/i);
   return { target: m?.[1] ?? 'unknown', related: [] };
 }
 

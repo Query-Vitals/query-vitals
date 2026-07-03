@@ -41,7 +41,7 @@ function mongoQuery(command: object, an: IndexAnalysis, fingerprint = 'fp1'): Qu
 }
 
 function input(queries: QueryRecord[], existingIndexes: RecommendationInput['existingIndexes'] = []): RecommendationInput {
-  return { connectionId: 'conn-1', queries, existingIndexes };
+  return { connectionId: 'conn-1', engine: 'mongodb', queries, existingIndexes };
 }
 
 describe('RecommendationEngine (MongoDB)', () => {
@@ -127,10 +127,8 @@ function idx(name: string, fields: string[], over: Partial<Idx> = {}): Idx {
   };
 }
 
-// Redundant detection keys off engineOf(queries); an empty query list defaults
-// to MySQL, which is what these rules target.
 function mysqlInput(existingIndexes: Idx[]): RecommendationInput {
-  return { connectionId: 'conn-1', queries: [], existingIndexes };
+  return { connectionId: 'conn-1', engine: 'mysql', queries: [], existingIndexes };
 }
 
 describe('RecommendationEngine — redundant indexes (MySQL)', () => {
@@ -228,5 +226,177 @@ describe('RecommendationEngine — unused indexes (MongoDB)', () => {
   it('does not run unused-index detection for a MySQL connection', () => {
     const recs = engine.detectUnusedIndexes(mysqlInput([idx('idx_a', ['a'], { accessCount: 0 })]));
     expect(recs).toHaveLength(0);
+  });
+});
+
+/* ---------- Postgres ---------- */
+
+function pgQuery(normalizedQuery: string, an: IndexAnalysis, over: Partial<QueryRecord> = {}): QueryRecord {
+  return {
+    id: over.fingerprint ?? 'pg-fp1',
+    connectionId: 'conn-1',
+    engine: 'postgres',
+    source: 'postgres.pg_stat_statements',
+    rawQuery: normalizedQuery,
+    normalizedQuery,
+    fingerprint: 'pg-fp1',
+    queryType: 'select',
+    databaseName: 'shop',
+    targetName: 'orders',
+    executionTimeMs: 50,
+    timestamp: new Date().toISOString(),
+    analysis: an,
+    ...over,
+  };
+}
+
+function pgInput(queries: QueryRecord[], existingIndexes: Idx[] = []): RecommendationInput {
+  return { connectionId: 'conn-1', engine: 'postgres', queries, existingIndexes };
+}
+
+const seqScan = (): IndexAnalysis =>
+  analysis({ fullTableScan: true, rowsExamined: 50000, rowsReturned: 12, selectivity: 0.0002 });
+
+describe('RecommendationEngine (Postgres) — missing/composite indexes', () => {
+  it('suggests a composite index ordered equality → range → sort with PostgreSQL DDL', () => {
+    const q = pgQuery(
+      'SELECT * FROM orders WHERE user_id = ? AND status = ? AND total > ? ORDER BY created_at DESC',
+      seqScan(),
+    );
+    const recs = engine.suggestCompositeIndexes(pgInput([q]));
+    expect(recs).toHaveLength(1);
+    const rec = recs[0]!;
+    expect(rec.engine).toBe('postgres');
+    expect(rec.kind).toBe('composite-index');
+    expect(rec.fields.map((f) => f.name)).toEqual(['user_id', 'status', 'total', 'created_at']);
+    expect(rec.ddl).toBe(
+      'CREATE INDEX idx_orders_user_id_status_total_created_at ON orders (user_id, status, total, created_at DESC);',
+    );
+    expect(rec.severity).toBe('critical');
+  });
+
+  it('suggests a single-column index for a one-predicate seq scan', () => {
+    const q = pgQuery('SELECT * FROM orders WHERE user_id = ?', seqScan());
+    const recs = engine.suggestMissingIndexes(pgInput([q]));
+    expect(recs).toHaveLength(1);
+    expect(recs[0]!.ddl).toBe('CREATE INDEX idx_orders_user_id ON orders (user_id);');
+  });
+
+  it('does not suggest a b-tree that already exists, but ignores a GIN on the same column', () => {
+    const q = pgQuery('SELECT * FROM orders WHERE user_id = ?', seqScan());
+    const covered = engine.suggestMissingIndexes(
+      pgInput([q], [idx('idx_uid', ['user_id'], { method: 'btree' })]),
+    );
+    expect(covered).toHaveLength(0);
+    const ginOnly = engine.suggestMissingIndexes(
+      pgInput([q], [idx('gin_uid', ['user_id'], { method: 'gin' })]),
+    );
+    expect(ginOnly).toHaveLength(1);
+  });
+});
+
+describe('RecommendationEngine (Postgres) — redundant & unused indexes', () => {
+  it('flags a left-prefix index with PostgreSQL DROP INDEX syntax', () => {
+    const recs = engine.detectRedundantIndexes(
+      pgInput([], [
+        idx('idx_a', ['a'], { method: 'btree' }),
+        idx('idx_a_b', ['a', 'b'], { method: 'btree' }),
+      ]),
+    );
+    expect(recs).toHaveLength(1);
+    expect(recs[0]!.engine).toBe('postgres');
+    expect(recs[0]!.ddl).toBe('DROP INDEX "idx_a";');
+  });
+
+  it('does not compare indexes of different access methods', () => {
+    const recs = engine.detectRedundantIndexes(
+      pgInput([], [
+        idx('btree_payload', ['payload'], { method: 'btree' }),
+        idx('gin_payload', ['payload'], { method: 'gin' }),
+      ]),
+    );
+    expect(recs).toHaveLength(0);
+  });
+
+  it('flags an index with zero idx_scan on an active table, but never a primary key', () => {
+    const active = pgQuery('SELECT * FROM orders WHERE id = ?', analysis({ usesIndex: true }));
+    const recs = engine.detectUnusedIndexes(
+      pgInput([active], [
+        idx('orders_pkey', ['id'], { unique: true, primary: true, accessCount: 0 }),
+        idx('stale_idx', ['legacy'], { accessCount: 0 }),
+        idx('busy_idx', ['user_id'], { accessCount: 512 }),
+      ]),
+    );
+    expect(recs).toHaveLength(1);
+    expect(recs[0]!.ddl).toBe('DROP INDEX "stale_idx";');
+    expect(recs[0]!.rationale).toContain('statistics were last reset');
+  });
+});
+
+describe('RecommendationEngine (Postgres) — expression & GIN indexes', () => {
+  it('suggests an expression index when a function wraps the filtered column', () => {
+    const q = pgQuery('SELECT * FROM users WHERE lower(email) = ?', seqScan(), {
+      targetName: 'users',
+    });
+    const recs = engine.generateAll(pgInput([q]));
+    const expr = recs.find((r) => r.kind === 'expression-index');
+    expect(expr).toBeDefined();
+    expect(expr!.ddl).toBe('CREATE INDEX idx_users_email_expr ON users (lower(email));');
+    expect(expr!.rationale).toContain('lower(email)');
+  });
+
+  it('suggests an expression index for a cast-wrapped column', () => {
+    const q = pgQuery('SELECT * FROM users WHERE email::text = ?', seqScan(), {
+      targetName: 'users',
+    });
+    const recs = engine.generateAll(pgInput([q]));
+    const expr = recs.find((r) => r.kind === 'expression-index');
+    expect(expr).toBeDefined();
+    expect(expr!.ddl).toBe('CREATE INDEX idx_users_email_expr ON users ((email::text));');
+  });
+
+  it('does not re-suggest an expression index the catalog already has', () => {
+    const q = pgQuery('SELECT * FROM users WHERE lower(email) = ?', seqScan(), {
+      targetName: 'users',
+    });
+    const recs = engine.generateAll(
+      pgInput([q], [idx('users_lower_email', ['lower((email)::text)'], { targetName: 'users' })]),
+    );
+    expect(recs.filter((r) => r.kind === 'expression-index')).toHaveLength(0);
+  });
+
+  it('suggests a GIN index for JSONB containment', () => {
+    const q = pgQuery('SELECT * FROM events WHERE payload @> ?', seqScan(), {
+      targetName: 'events',
+    });
+    const recs = engine.generateAll(pgInput([q]));
+    const gin = recs.find((r) => r.kind === 'gin-index');
+    expect(gin).toBeDefined();
+    expect(gin!.ddl).toBe('CREATE INDEX idx_events_payload_gin ON events USING GIN (payload);');
+  });
+
+  it('suggests a GIN index for array overlap (&&)', () => {
+    const q = pgQuery('SELECT * FROM posts WHERE tags && ?', seqScan(), { targetName: 'posts' });
+    const recs = engine.generateAll(pgInput([q]));
+    expect(recs.some((r) => r.kind === 'gin-index' && r.fields[0]!.name === 'tags')).toBe(true);
+  });
+
+  it('does not re-suggest a GIN index that already exists', () => {
+    const q = pgQuery('SELECT * FROM events WHERE payload @> ?', seqScan(), {
+      targetName: 'events',
+    });
+    const recs = engine.generateAll(
+      pgInput([q], [idx('gin_payload', ['payload'], { targetName: 'events', method: 'gin' })]),
+    );
+    expect(recs.filter((r) => r.kind === 'gin-index')).toHaveLength(0);
+  });
+
+  it('stays silent for indexed, selective queries', () => {
+    const q = pgQuery(
+      'SELECT * FROM users WHERE lower(email) = ?',
+      analysis({ usesIndex: true, rowsExamined: 1, rowsReturned: 1, selectivity: 1 }),
+      { targetName: 'users' },
+    );
+    expect(engine.generateAll(pgInput([q]))).toHaveLength(0);
   });
 });

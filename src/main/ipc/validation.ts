@@ -52,6 +52,12 @@ export const connectionConfigSchema = z.discriminatedUnion('engine', [
       replicaSet: z.string().trim().max(500).optional(),
     })
     .strict(),
+  z
+    .object({
+      ...baseConnectionSchema,
+      engine: z.literal('postgres'),
+    })
+    .strict(),
 ]);
 
 export const optionalPasswordSchema = z.string().max(10_000).optional();
@@ -89,6 +95,7 @@ export const dashboardRankingSchema = z.enum([
 export const dashboardLimitSchema = z.number().int().min(1).max(100);
 export const bucketMsSchema = z.number().int().min(1_000).max(86_400_000);
 export const rawQuerySchema = z.string().trim().min(1).max(100_000);
+export const optionalBooleanSchema = z.boolean().optional();
 
 export function parseConnectionConfig(value: unknown): ConnectionConfig {
   return connectionConfigSchema.parse(value) as ConnectionConfig;

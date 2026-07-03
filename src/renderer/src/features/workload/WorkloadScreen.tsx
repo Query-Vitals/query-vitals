@@ -112,7 +112,7 @@ export default function WorkloadScreen(): JSX.Element {
 
 function InsightCard({ insight }: { insight: WorkloadInsight }): JSX.Element {
   const code =
-    insight.engine === 'mysql' ? prettySql(insight.normalizedQuery) : insight.normalizedQuery;
+    insight.engine === 'mongodb' ? insight.normalizedQuery : prettySql(insight.normalizedQuery);
   return (
     <Card>
       <CardBody className="space-y-3">

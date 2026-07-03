@@ -6,7 +6,7 @@
 [![Local first](https://img.shields.io/badge/Local--first-no%20cloud-111827.svg)](#privacy)
 [![Website](https://img.shields.io/badge/Website-queryvitals.com-0f766e.svg)](https://queryvitals.com)
 
-A dark-mode-first desktop app that diagnoses **MySQL 8+** and **MongoDB 5+** query performance — from missing indexes and full scans to repeated workload patterns such as N+1 queries.
+A dark-mode-first desktop app that diagnoses **MySQL 8+**, **PostgreSQL 13+**, and **MongoDB 5+** query performance — from missing indexes and full scans to repeated workload patterns such as N+1 queries.
 
 It connects to a database, continuously observes the queries running against it, runs each through the engine's own execution-plan tooling, and reports a normalized diagnosis with a 0–100 performance score, copy-ready index suggestions, and workload insights. Everything is stored locally; there is no cloud dependency.
 
@@ -34,18 +34,18 @@ Slow database queries often hide behind vague symptoms: high CPU, long page load
 
 ## Status
 
-Phase 6 — workload pattern insights. On top of the polished MySQL/MongoDB core, the app now detects performance problems that only appear across a burst of queries: deterministic N+1 detection flags repeated, similarly-shaped point lookups that are individually fast but costly in aggregate, scored by cumulative cost and shown on a dedicated Workload screen separate from index suggestions.
+Phase 7 — PostgreSQL parity. PostgreSQL joins MySQL and MongoDB as a fully supported engine: query collection through `pg_stat_statements` (with per-statement plan verdicts derived deterministically via `EXPLAIN`, using `GENERIC_PLAN` on PostgreSQL 16+ for parameterized digests), normalized `EXPLAIN (FORMAT JSON)` plan trees, optional `EXPLAIN (ANALYZE, BUFFERS)` inspection from the query-detail screen, and Postgres-specific recommendations — expression indexes for function/cast-wrapped predicates, GIN indexes for JSONB/array containment, plus unused- and redundant-index detection from catalog statistics.
 
-The core local-first product is feature-complete for MySQL 8+ and MongoDB 5+: it can connect to databases, monitor query activity, normalize execution plans, score query performance, surface slow/full-scan patterns, generate copy-ready index recommendations with estimated impact and dismissal support, and surface repeated-lookup (N+1) workload patterns. Next planned work is Phase 7 PostgreSQL parity, followed by Phase 8 optional AI query optimization.
+The core local-first product is feature-complete for MySQL 8+, PostgreSQL 13+, and MongoDB 5+: it can connect to databases, monitor query activity, normalize execution plans, score query performance, surface slow/full-scan patterns, generate copy-ready index recommendations with estimated impact and dismissal support, and surface repeated-lookup (N+1) workload patterns. Next planned work is Phase 8 optional AI query optimization.
 
 ## Features
 
-- Local-only desktop monitoring for MySQL 8+ and MongoDB 5+.
+- Local-only desktop monitoring for MySQL 8+, PostgreSQL 13+, and MongoDB 5+.
 - Connection management with capability checks and keychain-backed secrets.
 - Continuous query collection through engine-native telemetry.
 - Normalized execution-plan analysis with a shared 0-100 performance score.
 - Live monitoring, query detail, dashboard metrics, rankings, and time-series charts.
-- Rule-based recommendations for missing, composite, compound, redundant, and unused indexes.
+- Rule-based recommendations for missing, composite, compound, redundant, and unused indexes — plus Postgres expression and GIN indexes.
 - Estimated-impact figures and dismissible suggestions.
 - Workload pattern insights: deterministic N+1 / repeated point-lookup detection scored by cumulative cost.
 - Cross-platform packaging through `electron-builder`.
@@ -68,7 +68,7 @@ Query Vitals is local-first by design:
 
 ## Stack
 
-Electron · React · TypeScript · TailwindCSS · Zustand · Recharts on the front; Node.js · `mysql2` · `mongodb` · `sql.js` (WASM SQLite, no native build) on the back. Build via `electron-vite`, package via `electron-builder`.
+Electron · React · TypeScript · TailwindCSS · Zustand · Recharts on the front; Node.js · `mysql2` · `pg` · `mongodb` · `sql.js` (WASM SQLite, no native build) on the back. Build via `electron-vite`, package via `electron-builder`.
 
 ## Quick start
 
@@ -86,7 +86,7 @@ src/
   main/            Electron main process (Node backend)
     domain/        entities, value-objects, repository + service interfaces (no I/O)
     application/   use-case orchestration over domain interfaces
-    infrastructure/connectors (mysql, mongodb), SQLite persistence, collectors
+    infrastructure/connectors (mysql, postgres, mongodb), SQLite persistence, collectors
     ipc/           ipcMain handlers
     bootstrap/     composition root (the only place concretes are constructed)
   preload/         typed contextBridge exposing window.api
@@ -110,14 +110,14 @@ npm run build      # production build
 
 - **Phase 5:** polish and packaging for the MySQL/MongoDB product. _(done)_
 - **Phase 6:** workload pattern insights, including N+1 and repeated point-lookup detection. _(done)_
-- **Phase 7:** PostgreSQL parity with `pg_stat_statements`, PostgreSQL plan parsing, and Postgres-specific recommendations.
+- **Phase 7:** PostgreSQL parity with `pg_stat_statements`, PostgreSQL plan parsing, and Postgres-specific recommendations. _(done)_
 - **Phase 8:** optional AI query optimization behind a provider port.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for the full phased plan.
 
 ## The dependency rule
 
-The whole codebase above the engine adapters depends only on the `IDatabaseConnector` interface — never on `mysql2` or `mongodb` directly. Each adapter normalizes its engine's plan output into one shared vocabulary, so the analyzer, recommendation engine, and UI are engine-agnostic. Adding a new database later means writing one adapter and updating the factory.
+The whole codebase above the engine adapters depends only on the `IDatabaseConnector` interface — never on `mysql2`, `pg`, or `mongodb` directly. Each adapter normalizes its engine's plan output into one shared vocabulary, so the analyzer, recommendation engine, and UI are engine-agnostic. Adding a new database later means writing one adapter and updating the factory.
 
 ## Contributing
 

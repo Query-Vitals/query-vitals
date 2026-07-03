@@ -58,13 +58,23 @@ export interface ExistingIndex {
   targetName: string;
   fields: { name: string; direction: 1 | -1 }[];
   unique: boolean;
-  /** MongoDB $indexStats access count, if available. */
+  /** Backs the primary key — never a drop candidate. */
+  primary?: boolean;
+  /** Access method (Postgres: btree, gin, gist, hash, …). Unset ⇒ btree-like. */
+  method?: string;
+  /** Index usage count (MongoDB $indexStats / Postgres idx_scan), if available. */
   accessCount?: number;
 }
 
 export interface ConnectorEvents {
   status: (status: ConnectionStatus) => void;
   error: (error: Error) => void;
+}
+
+/** Options for {@link IDatabaseConnector.explain}. */
+export interface ExplainOptions {
+  /** Execute the query to get actual figures (Postgres ANALYZE + BUFFERS). */
+  analyze?: boolean;
 }
 
 /**
@@ -83,9 +93,15 @@ export interface IDatabaseConnector {
 
   /**
    * Run the engine's plan command for a query and normalize it.
-   * MySQL: `EXPLAIN FORMAT=JSON ...`; Mongo: `explain("executionStats")`.
+   * MySQL: `EXPLAIN FORMAT=JSON ...`; Mongo: `explain("executionStats")`;
+   * Postgres: `EXPLAIN (FORMAT JSON) ...`.
+   *
+   * `opts.analyze` asks for real execution figures where the engine supports
+   * it (Postgres: `EXPLAIN (ANALYZE, BUFFERS)`). It EXECUTES the query, so it
+   * is only used for explicit user-initiated inspection, never by collectors.
+   * Engines without an analyze mode ignore the flag.
    */
-  explain(rawQuery: string, databaseName: string): Promise<{
+  explain(rawQuery: string, databaseName: string, opts?: ExplainOptions): Promise<{
     plan: ExecutionPlanNode;
     rawPlan: unknown;
     analysis: IndexAnalysis;

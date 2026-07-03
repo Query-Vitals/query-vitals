@@ -29,7 +29,12 @@ export class RecommendationService {
         const queries = await this.queryRepo.query({ connectionId, limit: 500 });
         const databases = [...new Set(queries.map((q) => q.databaseName).filter(Boolean))];
         const existingIndexes = await this.collectIndexes(connectionId, databases);
-        const recs = this.engine.generateAll({ connectionId, queries, existingIndexes });
+        const recs = this.engine.generateAll({
+          connectionId,
+          engine: config.engine,
+          queries,
+          existingIndexes,
+        });
         if (recs.length) await this.recRepo.upsertMany(recs);
       } catch {
         // Connection unavailable — fall back to whatever is already stored.

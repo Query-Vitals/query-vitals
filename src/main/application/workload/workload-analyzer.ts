@@ -33,6 +33,7 @@ import type {
 import { DEFAULT_WORKLOAD_OPTIONS } from '@shared/types/workload';
 import type { RecommendationSeverity } from '@shared/types/recommendation';
 import type { DatabaseEngine } from '@shared/types/database';
+import { parseableSql, sqlDialectOf } from '@main/application/analysis/sql-dialect';
 
 /** A point-lookup shape detected on a query, with the equality columns. */
 interface LookupShape {
@@ -79,13 +80,18 @@ export class WorkloadAnalyzer implements IWorkloadAnalyzer {
   private detectPointLookup(sample: WorkloadSample): LookupShape | null {
     return sample.engine === 'mongodb'
       ? detectMongoPointLookup(sample.normalizedQuery)
-      : this.detectSqlPointLookup(sample.normalizedQuery);
+      : this.detectSqlPointLookup(sample.normalizedQuery, sample.engine);
   }
 
-  private detectSqlPointLookup(normalizedQuery: string): LookupShape | null {
+  private detectSqlPointLookup(
+    normalizedQuery: string,
+    engine: DatabaseEngine,
+  ): LookupShape | null {
     let ast: unknown;
     try {
-      ast = this.parser.astify(normalizedQuery, { database: 'MySQL' });
+      ast = this.parser.astify(parseableSql(normalizedQuery, engine), {
+        database: sqlDialectOf(engine),
+      });
     } catch {
       return null;
     }

@@ -5,6 +5,9 @@
  * MySQL: missing index, composite index (column ordering by equality →
  *   range → sort), redundant index (prefix duplicates).
  * MongoDB: missing index, compound index, unused index ($indexStats == 0).
+ * Postgres: missing/composite index, redundant index, unused index
+ *   (idx_scan == 0), expression index (function-wrapped predicates), and GIN
+ *   index for JSONB/array containment.
  *
  * The engine is pure: given the same inputs it returns the same suggestions,
  * which makes it straightforward to unit-test.
@@ -12,10 +15,13 @@
 
 import type { Recommendation } from '@shared/types/recommendation';
 import type { QueryRecord } from '@shared/types/query';
+import type { DatabaseEngine } from '@shared/types/database';
 import type { ExistingIndex } from './database-connector';
 
 export interface RecommendationInput {
   connectionId: string;
+  /** Engine of the connection — selects which rule set applies. */
+  engine: DatabaseEngine;
   /** Analyzed query digests for the connection. */
   queries: QueryRecord[];
   /** Current indexes, keyed implicitly by db/target. */

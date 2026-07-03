@@ -14,7 +14,7 @@ import { getApi, useApi, useMutation } from '@renderer/shared/hooks/useApi';
 import { useAppStore } from '@renderer/shared/store/app-store';
 import { formatTimestamp } from '@renderer/shared/lib/format';
 import { ConnectionForm } from './ConnectionForm';
-import { tagChipStyle } from './labels';
+import { ENGINE_BADGE_VARIANTS, ENGINE_LABELS, tagChipStyle } from './labels';
 
 interface ConnectionsScreenProps {
   variant?: 'page' | 'popup';
@@ -121,8 +121,8 @@ export default function ConnectionsScreen({ variant = 'page' }: ConnectionsScree
                         {c.database ? ` / ${c.database}` : ''}
                       </div>
                     </div>
-                    <Badge variant={c.engine === 'mysql' ? 'accent' : 'good'}>
-                      {c.engine === 'mysql' ? 'MySQL' : 'MongoDB'}
+                    <Badge variant={ENGINE_BADGE_VARIANTS[c.engine]}>
+                      {ENGINE_LABELS[c.engine]}
                     </Badge>
                   </div>
 

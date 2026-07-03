@@ -82,7 +82,8 @@ export interface IpcApi {
   queries: {
     list(filter: QueryHistoryFilter): Promise<QueryRecord[]>;
     get(id: string): Promise<QueryRecord | null>;
-    explain(connectionId: string, rawQuery: string): Promise<QueryRecord>;
+    /** `analyze` executes the query for actual figures (Postgres ANALYZE + BUFFERS). */
+    explain(connectionId: string, rawQuery: string, analyze?: boolean): Promise<QueryRecord>;
   };
   dashboard: {
     metrics(connectionId: string, from: string, to: string): Promise<DashboardMetrics>;

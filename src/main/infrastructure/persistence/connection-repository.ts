@@ -3,6 +3,7 @@ import type {
   ConnectionConfig,
   MongoConnectionConfig,
   MySqlConnectionConfig,
+  PostgresConnectionConfig,
   TlsConfig,
 } from '@shared/types/database';
 import type { Row, SqliteDatabase } from './database';
@@ -92,6 +93,10 @@ function toConfig(row: Row): ConnectionConfig {
       ...(row['replica_set'] != null ? { replicaSet: String(row['replica_set']) } : {}),
     };
     return mongo;
+  }
+  if (row['engine'] === 'postgres') {
+    const postgres: PostgresConnectionConfig = { ...base, engine: 'postgres' };
+    return postgres;
   }
   const mysql: MySqlConnectionConfig = { ...base, engine: 'mysql' };
   return mysql;

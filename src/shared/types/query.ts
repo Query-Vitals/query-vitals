@@ -1,7 +1,8 @@
 /**
  * Engine-agnostic representation of an observed query and its analysis.
- * MySQL EXPLAIN output and MongoDB explain() output are both normalized into
- * these shapes so the UI and recommendation engine stay engine-independent.
+ * MySQL EXPLAIN, PostgreSQL EXPLAIN (FORMAT JSON), and MongoDB explain()
+ * output are all normalized into these shapes so the UI and recommendation
+ * engine stay engine-independent.
  */
 
 import type { DatabaseEngine } from './database';
@@ -22,6 +23,7 @@ export type QuerySource =
   | 'mysql.slow_log'
   | 'mongo.profiler'
   | 'mongo.currentOp'
+  | 'postgres.pg_stat_statements'
   | 'manual'; // pasted into the analyzer by the user
 
 /**

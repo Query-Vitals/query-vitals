@@ -31,7 +31,8 @@ const api: IpcApi = {
   queries: {
     list: (filter) => ipcRenderer.invoke(C.queries.list, filter),
     get: (id) => ipcRenderer.invoke(C.queries.get, id),
-    explain: (connectionId, rawQuery) => ipcRenderer.invoke(C.queries.explain, connectionId, rawQuery),
+    explain: (connectionId, rawQuery, analyze) =>
+      ipcRenderer.invoke(C.queries.explain, connectionId, rawQuery, analyze),
   },
   dashboard: {
     metrics: (id, from, to) => ipcRenderer.invoke(C.dashboard.metrics, id, from, to),

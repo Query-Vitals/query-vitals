@@ -8,6 +8,21 @@
  */
 
 import type { CSSProperties } from 'react';
+import type { DatabaseEngine } from '@shared/types/database';
+
+/** Display name per engine. */
+export const ENGINE_LABELS: Record<DatabaseEngine, string> = {
+  mysql: 'MySQL',
+  postgres: 'PostgreSQL',
+  mongodb: 'MongoDB',
+};
+
+/** Badge variant per engine so the three read distinctly at a glance. */
+export const ENGINE_BADGE_VARIANTS: Record<DatabaseEngine, 'accent' | 'good' | 'neutral'> = {
+  mysql: 'accent',
+  postgres: 'neutral',
+  mongodb: 'good',
+};
 
 export interface ConnectionColor {
   /** Stable key, handy for keys/labels. */

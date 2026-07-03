@@ -4,6 +4,7 @@ import type { IConnectorFactory, IDatabaseConnector } from '@main/domain/service
 import type { ConnectionConfig } from '@shared/types/database';
 import { MySqlConnector } from './mysql/mysql-connector';
 import { MongoConnector } from './mongodb/mongo-connector';
+import { PostgresConnector } from './postgres/postgres-connector';
 
 export class ConnectorFactory implements IConnectorFactory {
   create(config: ConnectionConfig, password: string | null): IDatabaseConnector {
@@ -12,6 +13,8 @@ export class ConnectorFactory implements IConnectorFactory {
         return new MySqlConnector(config, password);
       case 'mongodb':
         return new MongoConnector(config, password);
+      case 'postgres':
+        return new PostgresConnector(config, password);
       default: {
         // Exhaustiveness guard: a new engine must be handled here.
         const _never: never = config;

@@ -16,8 +16,11 @@ export class AnalysisService {
     private readonly queryRepo: IQueryHistoryRepository,
   ) {}
 
-  /** Ad-hoc: run EXPLAIN on a concrete query the user pasted in. */
-  async explain(connectionId: string, rawQuery: string): Promise<QueryRecord> {
+  /**
+   * Ad-hoc: run EXPLAIN on a concrete query the user pasted in. `analyze`
+   * additionally executes it for actual figures (Postgres ANALYZE + BUFFERS).
+   */
+  async explain(connectionId: string, rawQuery: string, analyze = false): Promise<QueryRecord> {
     const config = await this.connections.get(connectionId);
     if (!config) throw new Error(`Connection not found: ${connectionId}`);
     const password = config.passwordRef ? await this.secrets.get(config.passwordRef) : null;
@@ -33,6 +36,7 @@ export class AnalysisService {
         },
         connector,
         'manual',
+        { analyze },
       );
       await this.queryRepo.upsert(record);
       return record;

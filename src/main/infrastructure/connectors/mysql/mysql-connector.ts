@@ -173,6 +173,7 @@ export class MySqlConnector implements IDatabaseConnector {
           targetName: table,
           fields: [],
           unique: Number(r['NON_UNIQUE']) === 0,
+          ...(name === 'PRIMARY' ? { primary: true } : {}),
         };
         byIndex.set(key, idx);
       }

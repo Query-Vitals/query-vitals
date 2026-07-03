@@ -4,7 +4,7 @@
  * Keep this file free of Node/Electron imports so it is safe to use in both.
  */
 
-export type DatabaseEngine = 'mysql' | 'mongodb';
+export type DatabaseEngine = 'mysql' | 'mongodb' | 'postgres';
 
 /** SSL / TLS configuration shared by both engines. */
 export interface TlsConfig {
@@ -61,7 +61,20 @@ export interface MongoConnectionConfig extends BaseConnectionConfig {
   replicaSet?: string;
 }
 
-export type ConnectionConfig = MySqlConnectionConfig | MongoConnectionConfig;
+export interface PostgresConnectionConfig extends BaseConnectionConfig {
+  engine: 'postgres';
+  /**
+   * Database to connect to and monitor. PostgreSQL scopes a session to one
+   * database, so collection and EXPLAIN are limited to this database
+   * (defaults to "postgres" when omitted).
+   */
+  database?: string;
+}
+
+export type ConnectionConfig =
+  | MySqlConnectionConfig
+  | MongoConnectionConfig
+  | PostgresConnectionConfig;
 
 /**
  * Stable identifiers for a monitoring-capability problem. The UI maps each
@@ -77,7 +90,13 @@ export type CapabilityCode =
   // MongoDB: no target database configured, so we don't know what to profile.
   | 'mongo.no_target_database'
   // MongoDB: the account cannot read/manage the profiler on the target db.
-  | 'mongo.no_profiling_access';
+  | 'mongo.no_profiling_access'
+  // Postgres: pg_stat_statements is not in shared_preload_libraries (needs restart).
+  | 'postgres.pg_stat_statements_not_loaded'
+  // Postgres: the extension is loaded but CREATE EXTENSION has not been run.
+  | 'postgres.pg_stat_statements_not_created'
+  // Postgres: the account cannot read other sessions' statements (needs pg_read_all_stats).
+  | 'postgres.no_stats_access';
 
 /** A single missing monitoring capability, detected by `connector.test()`. */
 export interface CapabilityIssue {

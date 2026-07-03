@@ -64,11 +64,11 @@ export default function QueryDetailScreen(): JSX.Element {
     };
   }, [id]);
 
-  const onRerun = async (): Promise<void> => {
+  const onRerun = async (analyze = false): Promise<void> => {
     const api = getApi();
     if (!api || !record) return;
     const updated = await explain.run(() =>
-      api.queries.explain(record.connectionId, record.rawQuery),
+      api.queries.explain(record.connectionId, record.rawQuery, analyze),
     );
     if (updated) setRecord(updated);
   };
@@ -109,9 +109,21 @@ export default function QueryDetailScreen(): JSX.Element {
             </div>
           </div>
         </div>
-        <Button variant="primary" onClick={() => void onRerun()} loading={explain.loading}>
-          Re-run EXPLAIN
-        </Button>
+        <div className="flex items-center gap-2">
+          {record.engine === 'postgres' && (
+            <Button
+              variant="secondary"
+              onClick={() => void onRerun(true)}
+              loading={explain.loading}
+              title="Executes the query with EXPLAIN (ANALYZE, BUFFERS) for actual row counts and buffer I/O"
+            >
+              Run EXPLAIN ANALYZE
+            </Button>
+          )}
+          <Button variant="primary" onClick={() => void onRerun()} loading={explain.loading}>
+            Re-run EXPLAIN
+          </Button>
+        </div>
       </div>
 
       {explain.error != null && <ErrorBanner message={`EXPLAIN failed: ${explain.error}`} />}
@@ -123,7 +135,7 @@ export default function QueryDetailScreen(): JSX.Element {
             <CardBody>
               <CodeBlock
                 code={
-                  record.engine === 'mysql' ? prettySql(record.rawQuery) : record.rawQuery
+                  record.engine === 'mongodb' ? record.rawQuery : prettySql(record.rawQuery)
                 }
                 copyable
               />
@@ -262,7 +274,7 @@ function ScoreBars({ breakdown }: { breakdown: ScoreBreakdown }): JSX.Element {
 }
 
 function PlanTree({ node, depth = 0 }: { node: ExecutionPlanNode; depth?: number }): JSX.Element {
-  const isScan = /ALL|COLLSCAN|FULL/i.test(node.stage);
+  const isScan = /^ALL$|COLLSCAN|FULL|Seq Scan/i.test(node.stage);
   const isIndex = /IXSCAN|ref|range|eq_ref|index/i.test(node.stage);
   const stageVariant = isScan ? 'bad' : isIndex ? 'good' : 'neutral';
   return (

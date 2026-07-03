@@ -7,10 +7,12 @@ import type { DatabaseEngine } from './database';
 
 export type RecommendationKind =
   | 'missing-index'
-  | 'composite-index' // MySQL multi-column
+  | 'composite-index' // MySQL/Postgres multi-column
   | 'compound-index' // MongoDB multi-field
-  | 'redundant-index' // MySQL: prefix-of-another / duplicate
-  | 'unused-index'; // MongoDB: defined but never hit
+  | 'redundant-index' // MySQL/Postgres: prefix-of-another / duplicate
+  | 'unused-index' // MongoDB $indexStats == 0 / Postgres idx_scan == 0
+  | 'expression-index' // Postgres: function-wrapped predicate defeats a plain index
+  | 'gin-index'; // Postgres: JSONB/array containment needs GIN
 
 export type RecommendationSeverity = 'critical' | 'high' | 'medium' | 'low';
 

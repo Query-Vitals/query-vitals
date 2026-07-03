@@ -151,6 +151,8 @@ export function kindAction(kind: RecommendationKind): RecommendationAction {
     case 'missing-index':
     case 'composite-index':
     case 'compound-index':
+    case 'expression-index':
+    case 'gin-index':
       return 'add';
     case 'redundant-index':
     case 'unused-index':
@@ -166,6 +168,9 @@ export function kindVariant(kind: RecommendationKind): BadgeVariant {
     case 'composite-index':
     case 'compound-index':
       return 'good';
+    case 'expression-index':
+    case 'gin-index':
+      return 'neutral';
     case 'unused-index':
       return 'warn';
     case 'redundant-index':

@@ -21,6 +21,12 @@ export interface NormalizedStatement {
 export interface AnalyzeOptions {
   /** Slow-query threshold (ms) used for the latency factor of the score. */
   slowThresholdMs?: number;
+  /**
+   * Force the EXPLAIN path with real execution figures where the engine
+   * supports it (Postgres ANALYZE + BUFFERS). Executes the query — only for
+   * explicit user-initiated inspection.
+   */
+  analyze?: boolean;
 }
 
 export interface IQueryAnalyzer {

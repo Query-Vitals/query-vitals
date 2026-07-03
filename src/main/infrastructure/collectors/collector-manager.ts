@@ -33,6 +33,7 @@ interface ManagerDeps {
 const SOURCE_BY_ENGINE: Record<DatabaseEngine, QueryRecord['source']> = {
   mysql: 'mysql.performance_schema',
   mongodb: 'mongo.profiler',
+  postgres: 'postgres.pg_stat_statements',
 };
 
 export class CollectorManager implements ICollectorManager {

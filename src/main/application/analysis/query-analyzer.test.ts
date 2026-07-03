@@ -78,3 +78,56 @@ describe('QueryAnalyzer.normalize (MongoDB)', () => {
     expect(n.normalizedQuery).toContain('?');
   });
 });
+
+function rawSql(rawQuery: string, databaseName = 'app'): RawObservedQuery {
+  return { rawQuery, databaseName, executionTimeMs: 1, timestamp: new Date().toISOString() };
+}
+
+describe('QueryAnalyzer.normalize (Postgres)', () => {
+  it('collapses $n bind parameters to the shared "?" placeholder', () => {
+    const n = analyzer.normalize(
+      rawSql('SELECT * FROM orders WHERE user_id = $1 AND status = $2'),
+      'postgres',
+    );
+    expect(n.normalizedQuery).toBe('SELECT * FROM orders WHERE user_id = ? AND status = ?');
+    expect(n.queryType).toBe('select');
+    expect(n.targetName).toBe('orders');
+  });
+
+  it('fingerprints $n statements and literal statements identically', () => {
+    const digest = analyzer.normalize(
+      rawSql('SELECT * FROM orders WHERE user_id = $1'),
+      'postgres',
+    );
+    const literal = analyzer.normalize(
+      rawSql('SELECT * FROM orders WHERE user_id = 42'),
+      'postgres',
+    );
+    expect(digest.fingerprint).toBe(literal.fingerprint);
+  });
+
+  it('preserves double-quoted identifiers instead of treating them as strings', () => {
+    const n = analyzer.normalize(
+      rawSql('SELECT * FROM "Orders" WHERE "userId" = $1'),
+      'postgres',
+    );
+    expect(n.normalizedQuery).toBe('SELECT * FROM "Orders" WHERE "userId" = ?');
+  });
+
+  it('extracts join targets with the PostgresQL dialect', () => {
+    const n = analyzer.normalize(
+      rawSql('SELECT o.id FROM orders o JOIN users u ON u.id = o.user_id WHERE u.tenant_id = $1'),
+      'postgres',
+    );
+    expect(n.targetName).toBe('orders');
+    expect(n.relatedTargets).toContain('users');
+  });
+
+  it('classifies CTEs as selects', () => {
+    const n = analyzer.normalize(
+      rawSql('WITH recent AS (SELECT * FROM orders WHERE created_at > $1) SELECT * FROM recent'),
+      'postgres',
+    );
+    expect(n.queryType).toBe('select');
+  });
+});

@@ -38,7 +38,11 @@ interface FormState {
   color: string;
 }
 
-const DEFAULT_PORTS: Record<DatabaseEngine, number> = { mysql: 3306, mongodb: 27017 };
+const DEFAULT_PORTS: Record<DatabaseEngine, number> = {
+  mysql: 3306,
+  mongodb: 27017,
+  postgres: 5432,
+};
 
 function toFormState(c?: ConnectionConfig): FormState {
   return {
@@ -84,7 +88,7 @@ function buildConfig(initial: ConnectionConfig | undefined, f: FormState): Conne
   }
   return {
     ...base,
-    engine: 'mysql',
+    engine: f.engine,
     ...(f.database.trim() ? { database: f.database.trim() } : {}),
   };
 }
@@ -200,6 +204,7 @@ export function ConnectionForm({
             onChange={(e) => onEngineChange(e.target.value)}
             options={[
               { value: 'mysql', label: 'MySQL' },
+              { value: 'postgres', label: 'PostgreSQL' },
               { value: 'mongodb', label: 'MongoDB' },
             ]}
           />
@@ -235,7 +240,9 @@ export function ConnectionForm({
           label="Database"
           value={form.database}
           onChange={(e) => set('database', e.target.value)}
-          placeholder={form.engine === 'mongodb' ? 'admin' : 'app_db'}
+          placeholder={
+            form.engine === 'mongodb' ? 'admin' : form.engine === 'postgres' ? 'postgres' : 'app_db'
+          }
         />
         {form.engine === 'mongodb' && (
           <div className="grid grid-cols-2 gap-3">
