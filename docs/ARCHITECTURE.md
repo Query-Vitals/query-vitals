@@ -58,6 +58,23 @@ Everything is local; there is no cloud dependency. Query history, recommendation
 
 The connector port and the normalize-at-the-adapter rule are the foundation: they are what let a single analyzer, recommendation engine, and UI serve two very different databases. SQLite was chosen over a JSON file because the dashboard needs real aggregation, ranking, and time-bucketing over potentially large history. It runs via `sql.js` — SQLite compiled to WebAssembly — rather than a native module like `better-sqlite3`, a deliberate trade: the app installs with zero `node-gyp` compilation on any Node or Electron version (important given how often native addons break against new V8 releases), at the cost of keeping the database in memory and persisting it to disk with a debounced atomic `export()` after writes. For a local query-history tool the database is small, so this is simple and fast; the `SqliteDatabase` wrapper hides it entirely behind the repository interfaces. Zustand holds only UI state — active connection, navigation — while data fetched from the backend is cached per feature, avoiding a heavyweight global cache. Recharts renders the dashboard time series. The recommendation engine is written as a set of pure functions over analyzed queries and existing indexes, which makes its rules (column ordering, prefix redundancy, unused-index detection) directly unit-testable without a live database. The AI layer added later sits behind the `ILlmProvider` port rather than calling a model SDK directly, so the deterministic engine stays the source of truth and the model remains an optional, swappable, individually-testable consumer of its output.
 
+## Repository layout
+
+```
+src/
+  main/            Electron main process (Node backend)
+    domain/        entities, value-objects, repository + service interfaces (no I/O)
+    application/   use-case orchestration over domain interfaces
+    infrastructure/connectors (mysql, postgres, mongodb), SQLite persistence, collectors
+    ipc/           ipcMain handlers
+    bootstrap/     composition root (the only place concretes are constructed)
+  preload/         typed contextBridge exposing window.api
+  renderer/        React UI (feature-based)
+    src/features/  connections, monitoring, analysis, suggestions, workload, dashboard, query-detail
+    src/shared/    ui, hooks, lib, store (zustand)
+  shared/          cross-process types + the IPC contract (no Node/Electron imports)
+```
+
 ## Technology summary
 
 Electron + React + TypeScript + TailwindCSS + Zustand on the front; Node.js + TypeScript on the back; `mysql2` and `mongodb` as drivers; `sql.js` (WASM SQLite, no native build) for local storage; `node-sql-parser` for SQL normalization; Recharts for charts; Zod for validating data crossing the IPC boundary. The build uses `electron-vite` for fast dev reload and `electron-builder` for packaging Windows, macOS, and Linux artifacts. Dark mode is the default and only first-class theme, styled after TablePlus, MongoDB Compass, and Datadog.
